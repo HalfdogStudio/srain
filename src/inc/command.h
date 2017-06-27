@@ -3,6 +3,7 @@
 
 #define COMMAND_MAX_OPTS 20
 #define COMMAND_MAX_ARGS 20
+#define COMMAND_ARB_ARGC -1
 
 typedef struct _Command Command;
 
@@ -10,7 +11,7 @@ typedef int (CommandCallback) (Command *cmd, void *user_data);
 
 typedef struct {
     char *name;
-    unsigned argc;
+    int argc;
     char *opt_key[COMMAND_MAX_OPTS];
     char *opt_default_val[COMMAND_MAX_OPTS];
     CommandCallback *cb;

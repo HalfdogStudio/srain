@@ -1,9 +1,17 @@
 /**
  * @file command.c
- * @brief Flexible command parser
+ * @brief Simple line command interpreter
  * @author Shengyu Zhang <silverrainz@outlook.com>
  * @version 1.0
  * @date 2016-11-05
+ *
+ * Syntax:
+ *
+ *      <command> [option] [arguments...]
+ *
+ * option:
+ *      -
+ *
  */
 
 // #define __DBG_ON
@@ -15,6 +23,7 @@
 #include <assert.h>
 
 #include "command.h"
+#include "srain.h"
 
 #include "log.h"
 
@@ -37,57 +46,75 @@ static void command_free(Command *cmd){
     g_free(cmd);
 }
 
-static int get_arg(char *ptr, char **start, char **end){
-    *start = strtok(ptr, " ");
-    *end = strtok(NULL, "");
-    if (*end != NULL){
-        *end = g_strchug(*end);  // Remove leading whitespace
+static int get_arg(char *ptr, char **arg, char **next){
+    ptr = g_strchug(ptr); // Remove leading whitespace
+
+    *arg = strtok(ptr, " ");
+    *next = strtok(NULL, "");
+
+    if (next && *next){
+        *next = g_strchug(*next); // Remove leading whitespace of next argument
     }
 
-    if (*start == NULL){
-        return -1;
-    } else {
-        return 0;
-    }
+    DBG_FR("arg: '%s'", arg);
+
+    return  *arg ? SRN_OK : SRN_ERR;
 }
 
-static int get_quote_arg(char *ptr, char **start, char **end){
-    int escape = 0;
+static int get_quote_arg(char *ptr, char **arg, char **next){
+    bool quote;
+    bool escape;
 
     if (ptr == NULL || *ptr == '\0'){
         ERR_FR("Get a NULL or '\\0'");
-        return -1;
+        return SRN_ERR;
+    }
+
+    if (*ptr != '\'') {
+        return get_arg(ptr, arg, next);
     }
 
     ptr = g_strchug(ptr); // Remove leading whitespace
 
-    if (*ptr != '\'') {
-        return get_arg(ptr, start, end);
-    }
-
+    quote = TRUE;
+    escape = FALSE;
     *ptr++ = '\0';
-    *start = ptr;
-    while (ptr++) {
-        if (*ptr == '\0'){
-            goto fail;
+    *arg = ptr;
+
+    while (*ptr && quote) {
+        LOG_FR("char: %c", *ptr);
+        if (!escape && *ptr == '\\'){
+            LOG_FR("escape TRUE");
+            escape = TRUE;
         }
-        if (*ptr == '\\' && escape == 0){
-            escape = 1;
+        else if (escape && *ptr == '\''){
+            LOG_FR("escape");
             strcpy(ptr, ptr + 1);
-            continue;
+        } 
+        else if (!escape && *ptr == '\''){
+            *ptr = '\0';
+            quote = FALSE;
+            LOG_FR("unquote");
+        } else {
+            escape = FALSE;
+            LOG_FR("escape FALSE");
         }
-        escape = 0;
-        if (*ptr == '\''){
-            *ptr++ = '\0';
-            while (*ptr == ' ') *ptr++ = '\0';
-            *end = ptr;
-            return 0;
-        }
+        ptr++;
     }
 
-fail:
-    ERR_FR("Unterminal quote");
-    return -1;
+    if (quote){
+        ERR_FR("Unterminal quote");
+        return SRN_ERR;
+    }
+
+    *next = ptr;
+    if (*next){
+        *next = g_strchug(*next);
+    }
+
+    DBG_FR("arg: '%s'", *arg);
+
+    return SRN_OK;
 }
 
 static int command_parse(Command *cmd, void *user_data){
@@ -98,23 +125,21 @@ static int command_parse(Command *cmd, void *user_data){
     get_arg(cmd->rawcmd, &tmp, &ptr);
 
     if (bind->argc == 0){
-        if (ptr == NULL) {
-            return 0;
+        if (*ptr == '\0') {
+            return SRN_OK;
         } else {
             goto too_many_arg;
         }
     }
 
-    if (ptr == NULL){
+    if (bind->argc != COMMAND_ARB_ARGC && *ptr == '\0'){
         goto missing_arg;
     }
 
     while (ptr && *ptr == '-'){
         int i;
         for (i = 0; bind->opt_key[i] != NULL; i++){
-            if (strncasecmp(bind->opt_key[i],
-                        ptr,
-                        strlen(bind->opt_key[i])) == 0){
+            if (g_str_has_prefix(ptr, bind->opt_key[i])){
                 break;
             }
         }
@@ -124,7 +149,6 @@ static int command_parse(Command *cmd, void *user_data){
         if (bind->opt_key[i] == NULL){
             goto unknown_opt;
         }
-        // Option found
 
         DBG_FR("Option '%s' found", cmd->opt_key[nopt]);
 
@@ -146,6 +170,10 @@ static int command_parse(Command *cmd, void *user_data){
     }
     cmd->opt_key[nopt] = NULL;
 
+    if (bind->argc == COMMAND_ARB_ARGC){
+        cmd->argv[0] = ptr;
+    }
+
     for (int i = 0; i < bind->argc - 1; i++){
         if (get_quote_arg(ptr, &cmd->argv[i], &ptr) < 0){
             cmd->argv[i] = NULL;
@@ -154,21 +182,25 @@ static int command_parse(Command *cmd, void *user_data){
     }
 
     cmd->argv[bind->argc - 1] = ptr;
-    if (ptr == NULL) goto missing_arg;
+    /* Debug output */
+    {
+        if (ptr == NULL) goto missing_arg;
 
-    for (int i = 0; i < nopt; i++){
-        DBG_FR("opt: '%s'", cmd->opt_key[i]);
-        if (bind->opt_default_val[i] != NULL)
-            DBG_FR("val: '%s'", cmd->opt_val[i]);
-    }
+        for (int i = 0; i < nopt; i++){
+            DBG_FR("opt: '%s'", cmd->opt_key[i]);
+            if (bind->opt_default_val[i] != NULL)
+                DBG_FR("val: '%s'", cmd->opt_val[i]);
+        }
 
-    for (int i = 0; i < bind->argc; i++){
-        DBG_FR("argv: '%s'", cmd->argv[i]);
+        for (int i = 0; i < bind->argc; i++){
+            DBG_FR("argv: '%s'", cmd->argv[i]);
+        }
     }
     return 0;
 
     // Don't care
 missing_arg:
+    // TODO: it shoule be cared
     // WARN_FR("Missing argument");
     return 0;
 
@@ -220,7 +252,7 @@ int command_proc(const char *rawcmd, void *user_data){
     if (!cmd_context) return -1;
 
     for (int i = 0; cmd_context->binds[i].name != NULL; i++){
-        if (strncasecmp(rawcmd, cmd_context->binds[i].name, strlen(cmd_context->binds[i].name)) == 0){
+        if (g_str_has_prefix(rawcmd, cmd_context->binds[i].name)){
             cmd = command_alloc(&cmd_context->binds[i], rawcmd);
             if (command_parse(cmd, user_data) == 0){
                 // callback
@@ -269,15 +301,13 @@ const char *command_get_arg(Command *cmd, unsigned index){
  */
 int command_get_opt(Command *cmd, const char *opt_key, char **opt_val){
     unsigned i = 0;
-    int ret = 0;
 
     while (cmd->opt_key[i] != NULL){
         if (strcasecmp(cmd->opt_key[i], opt_key) == 0){
-            ret = 1;
             if (opt_val != NULL){
                 *opt_val = cmd->opt_val[i];
             }
-            return ret;
+            return 1;
         }
         i++;
     }
@@ -289,13 +319,13 @@ int command_get_opt(Command *cmd, const char *opt_key, char **opt_val){
             if (opt_val != NULL){
                 *opt_val = cmd->bind->opt_default_val[i];
             }
-            return ret;
+            return 1;
         }
         i++;
     }
 
     ERR_FR("No such option '%s'", opt_key);
-    return ret;
+    return 0;
 }
 
 /**
@@ -321,7 +351,7 @@ static void get_quote_arg_test() {
     assert(get_quote_arg(strdup("'test\\'"), &start, &end) == -1);
 
     assert(get_quote_arg(strdup("'test\\\\''"), &start, &end) == 0);
-    assert(strcmp(start, "test\\") == 0);
+    assert(strcmp(start, "test\\\\") == 0);
     assert(strcmp(end, "'") == 0);
 }
 
@@ -427,8 +457,11 @@ void command_test(){
     assert(command_proc("/connect -ssl on 127.0.0.1 la", (void *)1) == 0);
     assert(command_proc("/connect -ssl '-on' '127.0.0.1 or irc.freenode.net' la", (void *)2) == 0);
 
+    LOG_FR(">>>>>>>>>>>>.");
     assert(command_proc("/topic", 0) == 0);
+    LOG_FR(">>>>>>>>>>>>.");
     assert(command_proc("/topic -del", (void *)1) == 0);
+    LOG_FR(">>>>>>>>>>>>.");
     assert(command_proc("/topic This is a topic", (void *)2) == 0);
     assert(command_proc("/topic 'This is a topic'", (void *)3) == 0);
     assert(command_proc("/topic '-del'", (void *)4) == 0);
